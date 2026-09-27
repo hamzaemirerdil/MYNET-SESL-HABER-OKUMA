@@ -1,0 +1,2150 @@
+import speech_recognition as sr
+import re
+import os
+import io
+
+from playwright.sync_api import sync_playwright
+
+
+# =========================================================
+# OCR KÜTÜPHANELERİ
+# =========================================================
+
+try:
+    import pytesseract
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    OCR_AVAILABLE = True
+
+except ImportError:
+
+    OCR_AVAILABLE = False
+
+
+# =========================================================
+# AYARLAR
+# =========================================================
+
+MYNET_URL = "https://www.mynet.com/"
+MYNET_NEWS_URL = "https://www.mynet.com/haber"
+MYNET_SPORT_URL = "https://www.mynet.com/spor"
+MYNET_FINANCE_URL = "https://finans.mynet.com/"
+
+CHROME_PROFILE = r"C:\Users\poyraz\Desktop\RL\ChromeBotProfile"
+
+SCREENSHOT_PATH = "mynet_screenshot.png"
+BEFORE_CLICK_SCREENSHOT = "mynet_before_click.png"
+AFTER_CLICK_SCREENSHOT = "mynet_after_click.png"
+
+
+# =========================================================
+# TESSERACT YOLLARI
+# =========================================================
+
+TESSERACT_PATHS = [
+
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+
+]
+
+
+TESSERACT_PATH = None
+
+
+if OCR_AVAILABLE:
+
+    for path in TESSERACT_PATHS:
+
+        if os.path.exists(path):
+
+            TESSERACT_PATH = path
+
+            pytesseract.pytesseract.tesseract_cmd = path
+
+            break
+
+
+# =========================================================
+# METİN NORMALLEŞTİRME
+# =========================================================
+
+def normalize_text(text):
+
+    if not text:
+        return ""
+
+    text = text.lower()
+
+    text = text.replace("’", "'")
+    text = text.replace("`", "'")
+
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+# =========================================================
+# TÜRKÇE KARAKTERLERİ NORMALLEŞTİR
+# =========================================================
+
+def remove_turkish_chars(text):
+
+    replacements = {
+
+        "ç": "c",
+        "ğ": "g",
+        "ı": "i",
+        "ö": "o",
+        "ş": "s",
+        "ü": "u",
+
+    }
+
+    for old, new in replacements.items():
+
+        text = text.replace(old, new)
+
+    return text
+
+
+# =========================================================
+# KELİME KONTROLÜ
+# =========================================================
+
+def contains_word(text, target):
+
+    text = normalize_text(text)
+    target = normalize_text(target)
+
+    if len(target) < 2:
+
+        return False
+
+    pattern = r"(?<!\w)" + re.escape(target) + r"(?!\w)"
+
+    return re.search(pattern, text) is not None
+
+
+# =========================================================
+# SESLİ KOMUT DİNLE
+# =========================================================
+
+def listen_command():
+
+    recognizer = sr.Recognizer()
+
+    with sr.Microphone() as source:
+
+        print("\n🎤 Komut bekleniyor...")
+
+        try:
+
+            recognizer.adjust_for_ambient_noise(
+                source,
+                duration=0.4
+            )
+
+        except Exception:
+
+            pass
+
+        try:
+
+            audio = recognizer.listen(
+                source,
+                timeout=5,
+                phrase_time_limit=7
+            )
+
+        except sr.WaitTimeoutError:
+
+            print("⏱️ Ses bekleme süresi doldu.")
+
+            return ""
+
+    try:
+
+        command = recognizer.recognize_google(
+            audio,
+            language="tr-TR"
+        )
+
+        command = normalize_text(command)
+
+        print(f"🗣️ Sen: {command}")
+
+        return command
+
+    except sr.UnknownValueError:
+
+        print("❌ Ne söylediğini anlayamadım.")
+
+        return ""
+
+    except sr.RequestError as e:
+
+        print(f"❌ Google ses tanıma hatası: {e}")
+
+        return ""
+
+
+# =========================================================
+# OCR KONTROL
+# =========================================================
+
+def check_ocr():
+
+    if not OCR_AVAILABLE:
+
+        print("\n⚠️ OCR Python paketleri bulunamadı.")
+
+        print("Kurmak için:")
+
+        print("pip install pytesseract pillow")
+
+        return False
+
+
+    if not TESSERACT_PATH:
+
+        print("\n⚠️ Tesseract bulunamadı.")
+
+        print("Beklenen yollar:")
+
+        for path in TESSERACT_PATHS:
+
+            print(path)
+
+        return False
+
+
+    print("\n✅ Tesseract bulundu:")
+
+    print(TESSERACT_PATH)
+
+    return True
+
+
+# =========================================================
+# MYNET AÇ
+# =========================================================
+
+def open_mynet(page):
+
+    print("🌐 Mynet açılıyor...")
+
+    page.goto(
+        MYNET_URL,
+        wait_until="domcontentloaded"
+    )
+
+    page.wait_for_timeout(2500)
+
+    print("✅ Mynet açıldı.")
+
+
+# =========================================================
+# EKRAN GÖRÜNTÜSÜ
+# =========================================================
+
+def take_screenshot(page):
+
+    try:
+
+        page.screenshot(
+            path=SCREENSHOT_PATH,
+            full_page=False
+        )
+
+        print(f"📸 Ekran görüntüsü kaydedildi: {SCREENSHOT_PATH}")
+
+    except Exception as e:
+
+        print(f"❌ Ekran görüntüsü alınamadı: {e}")
+
+
+# =========================================================
+# OCR İÇİN GÖRÜNTÜ HAZIRLA
+# =========================================================
+
+def prepare_image(image):
+
+    # Görüntüyü 2 kat büyüt
+    image = image.resize(
+        (
+            image.width * 2,
+            image.height * 2
+        )
+    )
+
+    # Gri ton
+    image = image.convert("L")
+
+    # Kontrast artır
+    image = ImageEnhance.Contrast(image).enhance(1.5)
+
+    # Keskinlik artır
+    image = ImageEnhance.Sharpness(image).enhance(1.5)
+
+    # Hafif filtre
+    image = image.filter(
+        ImageFilter.SHARPEN
+    )
+
+    return image
+
+
+# =========================================================
+# OCR EKRAN TARAMA
+# =========================================================
+
+def ocr_screen(page):
+
+    if not OCR_AVAILABLE:
+
+        return []
+
+
+    if not TESSERACT_PATH:
+
+        return []
+
+
+    try:
+
+        screenshot_bytes = page.screenshot(
+            full_page=False
+        )
+
+        image = Image.open(
+            io.BytesIO(screenshot_bytes)
+        )
+
+        original_width = image.width
+        original_height = image.height
+
+        image = prepare_image(image)
+
+        data = pytesseract.image_to_data(
+            image,
+            lang="tur+eng",
+            config="--oem 3 --psm 11",
+            output_type=pytesseract.Output.DICT
+        )
+
+        results = []
+
+        count = len(data["text"])
+
+        for i in range(count):
+
+            text = data["text"][i].strip()
+
+            if not text:
+                continue
+
+
+            try:
+
+                confidence = float(
+                    data["conf"][i]
+                )
+
+            except:
+
+                confidence = 0
+
+
+            if confidence < 25:
+
+                continue
+
+
+            x = int(data["left"][i])
+            y = int(data["top"][i])
+            width = int(data["width"][i])
+            height = int(data["height"][i])
+
+
+            # Görüntüyü 2 kat büyüttüğümüz için
+            # koordinatları tekrar orijinale indiriyoruz.
+
+            x = int(x / 2)
+            y = int(y / 2)
+            width = int(width / 2)
+            height = int(height / 2)
+
+
+            results.append({
+
+                "text": text,
+
+                "x": x,
+                "y": y,
+
+                "width": width,
+                "height": height,
+
+                "confidence": confidence,
+
+            })
+
+
+        return results
+
+
+    except Exception as e:
+
+        print(f"❌ OCR hatası: {e}")
+
+        return []
+
+
+# =========================================================
+# EKRANDA METİN BUL
+# =========================================================
+
+def find_text_on_screen(page, target):
+
+    target = normalize_text(target)
+
+    target_no_tr = remove_turkish_chars(target)
+
+
+    if len(target) < 2:
+
+        print("⚠️ OCR için hedef çok kısa.")
+
+        return None
+
+
+    print(f"🔎 Ekranda '{target}' aranıyor...")
+
+
+    ocr_results = ocr_screen(page)
+
+
+    if not ocr_results:
+
+        print("❌ OCR herhangi bir metin bulamadı.")
+
+        return None
+
+
+    # =====================================================
+    # 1. TAM HEDEF
+    # =====================================================
+
+    for item in ocr_results:
+
+        word = normalize_text(
+            item["text"]
+        )
+
+        word_no_tr = remove_turkish_chars(word)
+
+
+        if (
+            word == target
+            or word_no_tr == target_no_tr
+        ):
+
+            print(
+                f"✅ Tam hedef bulundu: '{item['text']}'"
+            )
+
+            return item
+
+
+    # =====================================================
+    # 2. TEK KELİME İÇİN TAM KELİME ARAMA
+    # =====================================================
+
+    for item in ocr_results:
+
+        word = normalize_text(
+            item["text"]
+        )
+
+        word_no_tr = remove_turkish_chars(word)
+
+
+        if (
+            contains_word(word, target)
+            or contains_word(word_no_tr, target_no_tr)
+        ):
+
+            print(
+                f"✅ Hedef bulundu: '{item['text']}'"
+            )
+
+            return item
+
+
+    # =====================================================
+    # 3. ÇOK KELİMELİ HEDEF
+    # =====================================================
+
+    target_words = target.split()
+
+
+    if len(target_words) > 1:
+
+        for i in range(len(ocr_results)):
+
+            combined = ""
+
+            first = None
+            last = None
+
+
+            for j in range(
+                i,
+                min(
+                    i + len(target_words) + 2,
+                    len(ocr_results)
+                )
+            ):
+
+                current = normalize_text(
+                    ocr_results[j]["text"]
+                )
+
+                if not current:
+                    continue
+
+
+                if first is None:
+
+                    first = ocr_results[j]
+
+
+                last = ocr_results[j]
+
+                combined += " " + current
+
+                combined = combined.strip()
+
+
+                combined_no_tr = remove_turkish_chars(
+                    combined
+                )
+
+
+                if (
+                    target in combined
+                    or target_no_tr in combined_no_tr
+                ):
+
+                    x1 = first["x"]
+                    y1 = first["y"]
+
+                    x2 = (
+                        last["x"]
+                        + last["width"]
+                    )
+
+                    y2 = (
+                        last["y"]
+                        + last["height"]
+                    )
+
+
+                    result = {
+
+                        "text": combined,
+
+                        "x": x1,
+
+                        "y": y1,
+
+                        "width": x2 - x1,
+
+                        "height": y2 - y1,
+
+                    }
+
+
+                    print(
+                        f"✅ Çok kelimeli hedef bulundu: '{combined}'"
+                    )
+
+                    return result
+
+
+    print(
+        f"❌ Ekranda '{target}' bulunamadı."
+    )
+
+    return None
+
+
+# =========================================================
+# OCR İLE TIKLA
+# =========================================================
+
+def click_ocr_target(page, target):
+
+    print("\n🖱️ EKRAN TABANLI TIKLAMA")
+
+    print(f"🎯 Hedef: {target}")
+
+
+    try:
+
+        page.screenshot(
+            path=BEFORE_CLICK_SCREENSHOT,
+            full_page=False
+        )
+
+        print(
+            f"📸 Tıklama öncesi ekran: "
+            f"{BEFORE_CLICK_SCREENSHOT}"
+        )
+
+    except:
+
+        pass
+
+
+    item = find_text_on_screen(
+        page,
+        target
+    )
+
+
+    if not item:
+
+        return False
+
+
+    center_x = (
+        item["x"]
+        + item["width"] / 2
+    )
+
+    center_y = (
+        item["y"]
+        + item["height"] / 2
+    )
+
+
+    print(
+        f"📍 Koordinat: "
+        f"X={int(center_x)} "
+        f"Y={int(center_y)}"
+    )
+
+
+    try:
+
+        page.mouse.move(
+            center_x,
+            center_y,
+            steps=5
+        )
+
+        page.wait_for_timeout(200)
+
+        print(
+            f"🖱️ '{item['text']}' üzerine tıklanıyor..."
+        )
+
+        page.mouse.click(
+            center_x,
+            center_y
+        )
+
+        print("✅ Mouse tıklaması yapıldı.")
+
+        page.wait_for_timeout(1000)
+
+
+        try:
+
+            page.screenshot(
+                path=AFTER_CLICK_SCREENSHOT,
+                full_page=False
+            )
+
+            print(
+                f"📸 Tıklama sonrası ekran: "
+                f"{AFTER_CLICK_SCREENSHOT}"
+            )
+
+        except:
+
+            pass
+
+
+        return True
+
+
+    except Exception as e:
+
+        print(
+            f"❌ OCR mouse tıklama hatası: {e}"
+        )
+
+        return False
+
+
+# =========================================================
+# DOM İLE TIKLA
+# =========================================================
+
+def click_dom_text(page, target):
+
+    print(
+        f"🌐 DOM içinde '{target}' aranıyor..."
+    )
+
+
+    try:
+
+        locator = page.get_by_text(
+            target,
+            exact=False
+        ).first
+
+
+        locator.wait_for(
+            state="visible",
+            timeout=3000
+        )
+
+
+        locator.scroll_into_view_if_needed()
+
+        page.wait_for_timeout(300)
+
+
+        box = locator.bounding_box()
+
+
+        if box:
+
+            center_x = (
+                box["x"]
+                + box["width"] / 2
+            )
+
+            center_y = (
+                box["y"]
+                + box["height"] / 2
+            )
+
+
+            print(
+                f"📍 DOM koordinatı: "
+                f"X={int(center_x)} "
+                f"Y={int(center_y)}"
+            )
+
+
+            page.mouse.click(
+                center_x,
+                center_y
+            )
+
+        else:
+
+            locator.click(
+                timeout=3000
+            )
+
+
+        print(
+            f"✅ '{target}' tıklandı."
+        )
+
+
+        page.wait_for_timeout(1000)
+
+        return True
+
+
+    except Exception as e:
+
+        print(
+            f"❌ DOM tıklama başarısız: {e}"
+        )
+
+        return False
+
+
+# =========================================================
+# AKILLI TIKLAMA
+# OCR + DOM + YENİ SEKME KONTROLÜ
+# =========================================================
+
+def smart_click(page, context, target):
+
+    print("\n" + "=" * 60)
+
+    print("🤖 AKILLI TIKLAMA")
+
+    print("=" * 60)
+
+
+    # =====================================================
+    # TIKLAMADAN ÖNCEKİ SEKME LİSTESİ
+    # =====================================================
+
+    old_pages = context.pages.copy()
+
+
+    # =====================================================
+    # 1. OCR
+    # =====================================================
+
+    clicked = click_ocr_target(
+        page,
+        target
+    )
+
+
+    # =====================================================
+    # 2. DOM FALLBACK
+    # =====================================================
+
+    if not clicked:
+
+        print(
+            "\n⚠️ OCR hedefi bulamadı."
+        )
+
+        print(
+            "🌐 DOM yöntemi deneniyor..."
+        )
+
+
+        clicked = click_dom_text(
+            page,
+            target
+        )
+
+
+    # =====================================================
+    # HİÇBİR ŞEY BULUNAMADI
+    # =====================================================
+
+    if not clicked:
+
+        print(
+            f"❌ '{target}' bulunamadı."
+        )
+
+        return page
+
+
+    # =====================================================
+    # YENİ SEKME BEKLE
+    # =====================================================
+
+    print(
+        "\n🔎 Yeni sekme kontrol ediliyor..."
+    )
+
+
+    for _ in range(30):
+
+        current_pages = context.pages
+
+
+        if len(current_pages) > len(old_pages):
+
+            break
+
+
+        page.wait_for_timeout(100)
+
+
+    # =====================================================
+    # YENİ SEKME AÇILDI MI?
+    # =====================================================
+
+    current_pages = context.pages
+
+
+    if len(current_pages) > len(old_pages):
+
+        new_pages = [
+
+            p
+            for p in current_pages
+            if p not in old_pages
+
+        ]
+
+
+        if new_pages:
+
+            new_page = new_pages[-1]
+
+
+            try:
+
+                new_page.wait_for_load_state(
+                    "domcontentloaded",
+                    timeout=5000
+                )
+
+            except:
+
+                pass
+
+
+            page = new_page
+
+
+            try:
+
+                page.bring_to_front()
+
+            except:
+
+                pass
+
+
+            page.wait_for_timeout(1000)
+
+
+            print(
+                "🆕 Yeni sekme açıldı."
+            )
+
+            print(
+                f"📑 Aktif sekme sayısı: "
+                f"{len(context.pages)}"
+            )
+
+
+            try:
+
+                print(
+                    f"🌐 Yeni sayfa: "
+                    f"{page.url}"
+                )
+
+            except:
+
+                pass
+
+
+    else:
+
+        print(
+            "📄 Yeni sekme açılmadı."
+        )
+
+        print(
+            "📌 Mevcut sekmede devam ediliyor."
+        )
+
+
+    return page
+
+
+# =========================================================
+# HEDEF TEMİZLE
+# =========================================================
+
+def clean_target(target):
+
+    target = normalize_text(target)
+
+
+    # Apostrofları kaldır
+    target = target.replace(
+        "'",
+        ""
+    )
+
+
+    aliases = {
+
+        "habere": "haber",
+
+        "haberine": "haber",
+
+        "haberleri": "haber",
+
+        "haberler": "haber",
+
+        "spora": "spor",
+
+        "spora": "spor",
+
+        "spor'a": "spor",
+
+        "finansa": "finans",
+
+        "finans'a": "finans",
+
+        "sağlığa": "sağlık",
+
+        "sagliga": "sağlık",
+
+        "gümüşe": "gümüş",
+
+        "gumuse": "gümüş",
+
+        "faize": "faiz",
+
+        "altına": "altın",
+
+        "altina": "altın",
+
+        "dolara": "dolar",
+
+        "euroya": "euro",
+
+        "teknolojiye": "teknoloji",
+
+        "fenerbahçeye": "fenerbahçe",
+
+        "fenerbahceye": "fenerbahçe",
+
+        "galatasaraya": "galatasaray",
+
+        "beşiktaşa": "beşiktaş",
+
+        "besiktasa": "beşiktaş",
+
+        "resmi ilanlara": "resmi ilanlar",
+
+        "resmi ilanına": "resmi ilanlar",
+
+        "resmi ilanlari": "resmi ilanlar",
+
+        "resmi ilanlar": "resmi ilanlar",
+
+    }
+
+
+    if target in aliases:
+
+        return aliases[target]
+
+
+    return target
+
+
+# =========================================================
+# TIKLAMA HEDEFİNİ ÇIKAR
+# =========================================================
+
+def extract_click_target(command):
+
+    text = normalize_text(command)
+
+
+    # =====================================================
+    # TIKLA KELİMESİNİ KALDIR
+    # =====================================================
+
+    text = re.sub(
+        r"\b(tıkla|tikla)\b",
+        " ",
+        text
+    )
+
+
+    # =====================================================
+    # KOMUT SONLARINI KALDIR
+    # =====================================================
+
+    text = re.sub(
+        r"\b(üzerine|uzerine|butonuna|butonunu|aç|ac|git|gir)\b",
+        " ",
+        text
+    )
+
+
+    # =====================================================
+    # KOMUT BAŞLARINI KALDIR
+    # =====================================================
+
+    text = re.sub(
+        r"^(şuna|suna|buraya|oraya|lütfen|hemen)\s+",
+        "",
+        text
+    )
+
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+
+    return clean_target(text)
+
+
+# =========================================================
+# SAYFA AŞAĞI
+# =========================================================
+
+def scroll_down(page, amount=700):
+
+    print(
+        f"⬇️ Sayfa {amount}px aşağı kaydırılıyor..."
+    )
+
+
+    try:
+
+        page.mouse.wheel(
+            0,
+            amount
+        )
+
+        page.wait_for_timeout(500)
+
+        print(
+            "✅ Aşağı kaydırıldı."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Aşağı kaydırma hatası: {e}"
+        )
+
+
+# =========================================================
+# SAYFA YUKARI
+# =========================================================
+
+def scroll_up(page, amount=700):
+
+    print(
+        f"⬆️ Sayfa {amount}px yukarı kaydırılıyor..."
+    )
+
+
+    try:
+
+        page.mouse.wheel(
+            0,
+            -amount
+        )
+
+        page.wait_for_timeout(500)
+
+        print(
+            "✅ Yukarı kaydırıldı."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Yukarı kaydırma hatası: {e}"
+        )
+
+
+# =========================================================
+# SAYFA EN ALT
+# =========================================================
+
+def scroll_bottom(page):
+
+    print(
+        "⬇️ Sayfanın en altına gidiliyor..."
+    )
+
+
+    try:
+
+        page.evaluate(
+            "window.scrollTo(0, document.body.scrollHeight)"
+        )
+
+        page.wait_for_timeout(700)
+
+        print(
+            "✅ Sayfanın en altına gidildi."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ En alta gitme hatası: {e}"
+        )
+
+
+# =========================================================
+# SAYFA EN ÜST
+# =========================================================
+
+def scroll_top(page):
+
+    print(
+        "⬆️ Sayfanın en üstüne gidiliyor..."
+    )
+
+
+    try:
+
+        page.evaluate(
+            "window.scrollTo(0, 0)"
+        )
+
+        page.wait_for_timeout(700)
+
+        print(
+            "✅ Sayfanın en üstüne gidildi."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ En üste gitme hatası: {e}"
+        )
+
+
+# =========================================================
+# GERİ
+# =========================================================
+
+def go_back(page):
+
+    try:
+
+        page.go_back(
+            wait_until="domcontentloaded",
+            timeout=10000
+        )
+
+        page.wait_for_timeout(1000)
+
+        print(
+            "🔙 Geri gidildi."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Geri gitme hatası: {e}"
+        )
+
+
+# =========================================================
+# İLERİ
+# =========================================================
+
+def go_forward(page):
+
+    try:
+
+        page.go_forward(
+            wait_until="domcontentloaded",
+            timeout=10000
+        )
+
+        page.wait_for_timeout(1000)
+
+        print(
+            "🔜 İleri gidildi."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ İleri gitme hatası: {e}"
+        )
+
+
+# =========================================================
+# YENİLE
+# =========================================================
+
+def reload_page(page):
+
+    try:
+
+        page.reload(
+            wait_until="domcontentloaded",
+            timeout=10000
+        )
+
+        page.wait_for_timeout(1000)
+
+        print(
+            "🔄 Sayfa yenilendi."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Yenileme hatası: {e}"
+        )
+
+
+# =========================================================
+# MYNET SPOR
+# =========================================================
+
+def open_sport(page):
+
+    print(
+        "⚽ Mynet Spor açılıyor..."
+    )
+
+
+    try:
+
+        page.goto(
+            MYNET_SPORT_URL,
+            wait_until="domcontentloaded"
+        )
+
+        page.wait_for_timeout(1500)
+
+        print(
+            "✅ Mynet Spor açıldı."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Spor açma hatası: {e}"
+        )
+
+
+# =========================================================
+# MYNET HABER
+# =========================================================
+
+def open_news(page):
+
+    print(
+        "📰 Mynet Haber açılıyor..."
+    )
+
+
+    try:
+
+        page.goto(
+            MYNET_NEWS_URL,
+            wait_until="domcontentloaded"
+        )
+
+        page.wait_for_timeout(1500)
+
+        print(
+            "✅ Mynet Haber açıldı."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Haber açma hatası: {e}"
+        )
+
+
+# =========================================================
+# MYNET FİNANS
+# =========================================================
+
+def open_finance(page):
+
+    print(
+        "💰 Mynet Finans açılıyor..."
+    )
+
+
+    try:
+
+        page.goto(
+            MYNET_FINANCE_URL,
+            wait_until="domcontentloaded"
+        )
+
+        page.wait_for_timeout(1500)
+
+        print(
+            "✅ Mynet Finans açıldı."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Finans açma hatası: {e}"
+        )
+
+
+# =========================================================
+# KOMUTU İŞLE
+# =========================================================
+
+def process_command(page, context, command):
+
+    command = normalize_text(command)
+
+
+    if not command:
+
+        return page, True
+
+
+    # =====================================================
+    # KAPAT
+    # =====================================================
+
+    if command in [
+        "kapat",
+        "programı kapat",
+        "programi kapat",
+        "çık",
+        "cik"
+    ]:
+
+        print(
+            "\n🛑 Program kapatılıyor..."
+        )
+
+        return page, False
+
+
+    # =====================================================
+    # EKRAN GÖRÜNTÜSÜ
+    # =====================================================
+
+    if (
+        "ekran görüntüsü" in command
+        or "ekran goruntusu" in command
+        or "ekran görüntüsü al" in command
+        or "ekran goruntusu al" in command
+    ):
+
+        take_screenshot(page)
+
+        return page, True
+
+
+    # =====================================================
+    # EN ALT
+    # =====================================================
+
+    if (
+        "sayfanın en altına" in command
+        or "sayfanin en altina" in command
+        or "en alta" in command
+        or command == "en alt"
+    ):
+
+        scroll_bottom(page)
+
+        return page, True
+
+
+    # =====================================================
+    # EN ÜST
+    # =====================================================
+
+    if (
+        "sayfanın en üstüne" in command
+        or "sayfanin en ustune" in command
+        or "en üste" in command
+        or "en uste" in command
+        or command == "en üst"
+        or command == "en ust"
+    ):
+
+        scroll_top(page)
+
+        return page, True
+
+
+    # =====================================================
+    # ÇOK AŞAĞI
+    # =====================================================
+
+    if (
+        "çok aşağı" in command
+        or "cok asagi" in command
+        or "çok aşağı in" in command
+        or "cok asagi in" in command
+        or "çok aşağı indir" in command
+        or "cok asagi indir" in command
+        or "çok aşağı kaydır" in command
+        or "cok asagi kaydir" in command
+    ):
+
+        scroll_down(
+            page,
+            1500
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # BİRAZ AŞAĞI
+    # =====================================================
+
+    if (
+        "biraz aşağı" in command
+        or "biraz asagi" in command
+
+        or "birazcık aşağı" in command
+        or "birazcik asagi" in command
+
+        or "biraz aşağı in" in command
+        or "biraz asagi in" in command
+
+        or "birazcık aşağı in" in command
+        or "birazcik asagi in" in command
+
+        or "biraz aşağı indir" in command
+        or "biraz asagi indir" in command
+
+        or "birazcık aşağı indir" in command
+        or "birazcik asagi indir" in command
+
+        or "biraz aşağı kaydır" in command
+        or "biraz asagi kaydir" in command
+
+        or "birazcık aşağı kaydır" in command
+        or "birazcik asagi kaydir" in command
+    ):
+
+        scroll_down(
+            page,
+            400
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # NORMAL AŞAĞI
+    # =====================================================
+
+    if (
+        command == "aşağı"
+        or command == "asagi"
+        or "aşağı in" in command
+        or "asagi in" in command
+        or "aşağı git" in command
+        or "asagi git" in command
+        or "aşağı kaydır" in command
+        or "asagi kaydir" in command
+        or "aşağı indir" in command
+        or "asagi indir" in command
+    ):
+
+        scroll_down(
+            page,
+            700
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # ÇOK YUKARI
+    # =====================================================
+
+    if (
+        "çok yukarı" in command
+        or "cok yukari" in command
+        or "çok yukarı çık" in command
+        or "cok yukari cik" in command
+        or "çok yukarı çık" in command
+    ):
+
+        scroll_up(
+            page,
+            1500
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # BİRAZ YUKARI
+    # =====================================================
+
+    if (
+        "biraz yukarı" in command
+        or "biraz yukari" in command
+
+        or "birazcık yukarı" in command
+        or "birazcik yukari" in command
+
+        or "biraz yukarı çık" in command
+        or "biraz yukari cik" in command
+
+        or "birazcık yukarı çık" in command
+        or "birazcik yukari cik" in command
+
+        or "biraz yukarı kaydır" in command
+        or "biraz yukari kaydir" in command
+    ):
+
+        scroll_up(
+            page,
+            400
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # NORMAL YUKARI
+    # =====================================================
+
+    if (
+        command == "yukarı"
+        or command == "yukari"
+        or "yukarı çık" in command
+        or "yukari cik" in command
+        or "yukarı git" in command
+        or "yukari git" in command
+        or "yukarı kaydır" in command
+        or "yukari kaydir" in command
+        or "yukarı çık" in command
+        or "yukari cik" in command
+    ):
+
+        scroll_up(
+            page,
+            700
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # GERİ
+    # =====================================================
+
+    if (
+        command == "geri"
+        or command == "geri git"
+        or command == "geri dön"
+        or command == "geri don"
+    ):
+
+        go_back(page)
+
+        return page, True
+
+
+    # =====================================================
+    # İLERİ
+    # =====================================================
+
+    if (
+        command == "ileri"
+        or command == "ileri git"
+    ):
+
+        go_forward(page)
+
+        return page, True
+
+
+    # =====================================================
+    # YENİLE
+    # =====================================================
+
+    if (
+        command == "yenile"
+        or command == "sayfayı yenile"
+        or command == "sayfayi yenile"
+    ):
+
+        reload_page(page)
+
+        return page, True
+
+
+    # =====================================================
+    # MYNET ANA SAYFA
+    # =====================================================
+
+    if (
+        command == "mynet"
+        or command == "myneti aç"
+        or command == "myneti ac"
+        or command == "mynet'i aç"
+        or command == "mynet'i ac"
+        or command == "mynete git"
+        or command == "mynet ana sayfa"
+    ):
+
+        open_mynet(page)
+
+        return page, True
+
+
+    # =====================================================
+    # SPOR
+    # =====================================================
+
+    if (
+        command == "spor"
+        or command == "spor haberleri"
+        or command == "sporu aç"
+        or command == "sporu ac"
+        or command == "spor aç"
+        or command == "spor ac"
+    ):
+
+        open_sport(page)
+
+        return page, True
+
+
+    # =====================================================
+    # HABER
+    # =====================================================
+
+    if (
+        command == "haber"
+        or command == "haberler"
+        or command == "haberleri aç"
+        or command == "haberleri ac"
+        or command == "haber aç"
+        or command == "haber ac"
+    ):
+
+        open_news(page)
+
+        return page, True
+
+
+    # =====================================================
+    # FİNANS
+    # =====================================================
+
+    if (
+        command == "finans"
+        or command == "finansı aç"
+        or command == "finansi ac"
+        or command == "finans aç"
+        or command == "finans ac"
+    ):
+
+        open_finance(page)
+
+        return page, True
+
+
+    # =====================================================
+    # TIKLAMA KOMUTU
+    # =====================================================
+
+    if (
+        re.search(
+            r"\b(tıkla|tikla)\b",
+            command
+        )
+    ):
+
+        target = extract_click_target(
+            command
+        )
+
+
+        if target:
+
+            print(
+                f"🎯 Tıklama hedefi: '{target}'"
+            )
+
+
+            page = smart_click(
+                page,
+                context,
+                target
+            )
+
+            return page, True
+
+
+        print(
+            "❌ Tıklama hedefi anlaşılamadı."
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # DOĞRUDAN EKRAN HEDEFLERİ
+    # =====================================================
+
+    direct_targets = {
+
+        "haber": "haber",
+
+        "sağlık": "sağlık",
+        "saglik": "sağlık",
+
+        "spor": "spor",
+
+        "finans": "finans",
+
+        "gümüş": "gümüş",
+        "gumus": "gümüş",
+
+        "faiz": "faiz",
+
+        "dolar": "dolar",
+
+        "euro": "euro",
+
+        "altın": "altın",
+        "altin": "altın",
+
+        "bitcoin": "bitcoin",
+
+        "teknoloji": "teknoloji",
+
+        "son dakika": "son dakika",
+
+        "resmi ilanlar": "resmi ilanlar",
+
+        "fenerbahçe": "fenerbahçe",
+        "fenerbahce": "fenerbahçe",
+
+        "galatasaray": "galatasaray",
+
+        "beşiktaş": "beşiktaş",
+        "besiktas": "beşiktaş",
+
+    }
+
+
+    if command in direct_targets:
+
+        target = direct_targets[command]
+
+
+        print(
+            f"🎯 Ekran hedefi: '{target}'"
+        )
+
+
+        page = smart_click(
+            page,
+            context,
+            target
+        )
+
+        return page, True
+
+
+    # =====================================================
+    # BİLİNMEYEN KOMUT
+    # =====================================================
+
+    print(
+        "❓ Bu Mynet komutunu henüz bilmiyorum."
+    )
+
+    print(
+        "📌 Mynet'te kalıyorum."
+    )
+
+
+    return page, True
+
+
+# =========================================================
+# CHROME BAŞLAT
+# =========================================================
+
+def start_chrome(playwright):
+
+    print(
+        "🌐 Google Chrome başlatılıyor..."
+    )
+
+
+    try:
+
+        context = playwright.chromium.launch_persistent_context(
+
+            user_data_dir=CHROME_PROFILE,
+
+            channel="chrome",
+
+            headless=False,
+
+            viewport={
+                "width": 1280,
+                "height": 800
+            },
+
+        )
+
+
+        return context
+
+
+    except Exception as e:
+
+        print("\n❌ Chrome başlatılamadı.")
+
+        print(e)
+
+        print(
+            "\n⚠️ Chrome'un bütün pencerelerini kapatıp"
+        )
+
+        print(
+            "programı tekrar çalıştır."
+        )
+
+        return None
+
+
+# =========================================================
+# ANA PROGRAM
+# =========================================================
+
+def main():
+
+    print(
+        "\n"
+        + "=" * 65
+    )
+
+    print(
+        "🤖 MYNET SESLİ + OCR TARAYICI"
+    )
+
+    print(
+        "=" * 65
+    )
+
+
+    print(
+        "\nÖrnek komutlar:\n"
+    )
+
+
+    print("🌐 Mynet'i aç")
+
+    print("📸 Ekran görüntüsü al")
+
+    print("⬇️ Aşağı")
+
+    print("⬇️ Aşağı in")
+
+    print("⬇️ Biraz aşağı")
+
+    print("⬇️ Biraz aşağı in")
+
+    print("⬇️ Biraz aşağı indir")
+
+    print("⬇️ Birazcık aşağı in")
+
+    print("⬇️ Çok aşağı")
+
+    print("⬆️ Yukarı")
+
+    print("⬆️ Yukarı çık")
+
+    print("⬆️ Biraz yukarı")
+
+    print("⬆️ Biraz yukarı çık")
+
+    print("⬆️ Çok yukarı")
+
+    print("⚽ Spor haberleri")
+
+    print("📰 Haberleri aç")
+
+    print("💰 Finans")
+
+    print("🖱️ Son dakika tıkla")
+
+    print("🖱️ Sağlık tıkla")
+
+    print("🖱️ Fenerbahçe haberine tıkla")
+
+    print("🖱️ Teknoloji tıkla")
+
+    print("🖱️ Resmi ilanlara tıkla")
+
+    print("🖱️ Gümüş")
+
+    print("🖱️ Faiz")
+
+    print("⬇️ Sayfanın en altına")
+
+    print("⬆️ Sayfanın en üstüne")
+
+    print("🔙 Geri")
+
+    print("🔜 İleri")
+
+    print("🔄 Yenile")
+
+    print("❌ Kapat")
+
+
+    print(
+        "=" * 65
+    )
+
+
+    # =====================================================
+    # OCR KONTROL
+    # =====================================================
+
+    if not check_ocr():
+
+        print(
+            "\n⚠️ OCR olmadan da DOM sistemi çalışabilir."
+        )
+
+
+    # =====================================================
+    # PLAYWRIGHT
+    # =====================================================
+
+    with sync_playwright() as p:
+
+        context = start_chrome(p)
+
+
+        if context is None:
+
+            return
+
+
+        # =================================================
+        # İLK SAYFA
+        # =================================================
+
+        if context.pages:
+
+            page = context.pages[0]
+
+        else:
+
+            page = context.new_page()
+
+
+        try:
+
+            page.bring_to_front()
+
+        except:
+
+            pass
+
+
+        # =================================================
+        # MYNET AÇ
+        # =================================================
+
+        open_mynet(page)
+
+
+        print(
+            "✅ Mynet hazır."
+        )
+
+        print(
+            "🎤 Sesli komut sistemi hazır."
+        )
+
+
+        # =================================================
+        # ANA DÖNGÜ
+        # =================================================
+
+        running = True
+
+
+        try:
+
+            while running:
+
+                command = listen_command()
+
+
+                if not command:
+
+                    continue
+
+
+                page, running = process_command(
+                    page,
+                    context,
+                    command
+                )
+
+
+                # =========================================
+                # SAYFA KAPANDIYSA AKTİF SAYFA BUL
+                # =========================================
+
+                if running:
+
+                    if page.is_closed():
+
+                        if context.pages:
+
+                            page = context.pages[-1]
+
+                            try:
+
+                                page.bring_to_front()
+
+                            except:
+
+                                pass
+
+                            print(
+                                "🔄 Aktif sayfa yeniden seçildi."
+                            )
+
+                        else:
+
+                            page = context.new_page()
+
+                            open_mynet(page)
+
+
+        except KeyboardInterrupt:
+
+            print(
+                "\n\n🛑 Program kullanıcı tarafından durduruldu."
+            )
+
+
+        finally:
+
+            try:
+
+                context.close()
+
+            except:
+
+                pass
+
+
+            print(
+                "👋 Program kapatıldı."
+            )
+
+
+# =========================================================
+# PROGRAMI ÇALIŞTIR
+# =========================================================
+
+if __name__ == "__main__":
+
+    main()
